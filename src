@@ -1,0 +1,772 @@
+import SwiftUI
+import Combine
+import Foundation
+
+@main
+struct BizInfluenceApp: App {
+    var body: some Scene {
+        WindowGroup {
+            ContentView()
+        }
+    }
+}
+
+// MARK: - Models
+
+enum Niche: String, CaseIterable, Identifiable, Codable, Hashable {
+    case food = "Food"
+    case tech = "Tech"
+    case fashion = "Fashion"
+    case fitness = "Fitness"
+    case travel = "Travel"
+    case beauty = "Beauty"
+    case gaming = "Gaming"
+    case education = "Education"
+    case finance = "Finance"
+    case other = "Other"
+    var id: String { rawValue }
+}
+
+enum Platform: String, CaseIterable, Identifiable, Codable, Hashable {
+    case instagram = "Instagram"
+    case youtube = "YouTube"
+    case tiktok = "TikTok"
+    case twitter = "X/Twitter"
+    case blog = "Blog"
+    var id: String { rawValue }
+}
+
+struct Influencer: Identifiable, Hashable, Codable {
+    let id: UUID
+    let name: String
+    let niches: [Niche]
+    let platforms: [Platform]
+    let followers: Int
+    let baseRateUSD: Double
+    let location: String
+    let rating: Double
+    let bio: String
+    let avatarSystemImage: String
+}
+
+enum OfferStatus: String, CaseIterable, Identifiable, Codable {
+    case draft = "Draft"
+    case sent = "Sent"
+    case accepted = "Accepted"
+    case rejected = "Rejected"
+    var id: String { rawValue }
+}
+
+struct Offer: Identifiable, Codable, Hashable {
+    let id: UUID
+    let influencerId: UUID
+    let influencerName: String
+    let businessName: String
+    var title: String
+    var message: String
+    var budgetUSD: Double
+    var status: OfferStatus
+    let createdAt: Date
+}
+
+// MARK: - Store (in-memory demo)
+
+@MainActor
+final class AppStore: ObservableObject {
+    @Published var influencers: [Influencer] = []
+    @Published var offers: [Offer] = []
+    @Published var favoriteInfluencerIds: Set<UUID> = []
+
+    init() {
+        influencers = SampleData.influencers
+    }
+
+    func sendOffer(_ draft: Offer) {
+        var offer = draft
+        offer.status = .sent
+        offers.insert(offer, at: 0)
+    }
+
+    func updateOffer(_ offer: Offer) {
+        if let idx = offers.firstIndex(where: { $0.id == offer.id }) {
+            offers[idx] = offer
+        }
+    }
+
+    func toggleFavorite(_ influencer: Influencer) {
+        if favoriteInfluencerIds.contains(influencer.id) {
+            favoriteInfluencerIds.remove(influencer.id)
+        } else {
+            favoriteInfluencerIds.insert(influencer.id)
+        }
+    }
+
+    func isFavorite(_ influencer: Influencer) -> Bool {
+        favoriteInfluencerIds.contains(influencer.id)
+    }
+}
+
+enum SampleData {
+    static let influencers: [Influencer] = [
+        Influencer(
+            id: UUID(), name: "Ayesha Rao",
+            niches: [.food], platforms: [.instagram, .youtube],
+            followers: 420_000, baseRateUSD: 1500, location: "Bengaluru, IN",
+            rating: 4.8, bio: "Restaurant reviews, street food hunts, recipe shorts.",
+            avatarSystemImage: "leaf.circle.fill"
+        ),
+        Influencer(
+            id: UUID(), name: "TechWithDev",
+            niches: [.tech, .education], platforms: [.youtube, .twitter],
+            followers: 860_000, baseRateUSD: 3000, location: "San Francisco, US",
+            rating: 4.6, bio: "Honest gadget reviews and dev productivity tips.",
+            avatarSystemImage: "cpu.fill"
+        ),
+        Influencer(
+            id: UUID(), name: "FitAnita",
+            niches: [.fitness, .beauty], // fixed: removed invalid .health and compactMap
+            platforms: [.instagram, .tiktok],
+            followers: 520_000, baseRateUSD: 1800, location: "Mumbai, IN",
+            rating: 4.7, bio: "Healthy lifestyle, home workouts, quick meals.",
+            avatarSystemImage: "figure.run.circle.fill"
+        ),
+        Influencer(
+            id: UUID(), name: "TravelWithZee",
+            niches: [.travel, .food], platforms: [.youtube, .instagram],
+            followers: 1_200_000, baseRateUSD: 5000, location: "Dubai, AE",
+            rating: 4.9, bio: "Cinematic travel vlogs and local food guides.",
+            avatarSystemImage: "airplane.circle.fill"
+        ),
+        Influencer(
+            id: UUID(), name: "BiryaniBites",
+            niches: [.food], platforms: [.tiktok, .instagram],
+            followers: 310_000, baseRateUSD: 1200, location: "Hyderabad, IN",
+            rating: 4.5, bio: "All things biryani: ratings, recipes, and city guides.",
+            avatarSystemImage: "fork.knife.circle.fill"
+        )
+    ]
+}
+
+// MARK: - Root
+
+struct ContentView: View {
+    @StateObject private var store = AppStore()
+    @State private var businessName: String = "Your Brand"
+
+    var body: some View {
+        TabView {
+            DiscoverView()
+                .environmentObject(store)
+                .tabItem { Label("Discover", systemImage: "sparkles") }
+
+            OffersView(businessName: $businessName)
+                .environmentObject(store)
+                .tabItem { Label("Offers", systemImage: "doc.plaintext") }
+
+            ProfileView(businessName: $businessName)
+                .tabItem { Label("Profile", systemImage: "person.crop.circle") }
+        }
+    }
+}
+
+// MARK: - Discover
+
+struct DiscoverView: View {
+    @EnvironmentObject var store: AppStore
+    @State private var searchText: String = ""
+    @State private var selectedNiche: Niche? = nil
+    @State private var minFollowers: Double = 0
+    @State private var maxBudget: Double = 10_000
+    @State private var showFavoritesOnly: Bool = false
+
+    var filtered: [Influencer] {
+        store.influencers.filter { inf in
+            if showFavoritesOnly && !store.isFavorite(inf) { return false }
+            if let n = selectedNiche, !inf.niches.contains(n) { return false }
+            if Double(inf.followers) < minFollowers { return false }
+            if inf.baseRateUSD > maxBudget { return false }
+            if !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                let q = searchText.lowercased()
+                let matchesName = inf.name.lowercased().contains(q)
+                let matchesBio = inf.bio.lowercased().contains(q)
+                let matchesLoc = inf.location.lowercased().contains(q)
+                if !(matchesName || matchesBio || matchesLoc) { return false }
+            }
+            return true
+        }
+        .sorted { a, b in
+            if a.baseRateUSD == b.baseRateUSD {
+                return a.followers > b.followers
+            }
+            return a.baseRateUSD < b.baseRateUSD
+        }
+    }
+
+    var body: some View {
+        NavigationStack {
+            VStack(spacing: 0) {
+                FilterBar(
+                    searchText: $searchText,
+                    selectedNiche: $selectedNiche,
+                    minFollowers: $minFollowers,
+                    maxBudget: $maxBudget,
+                    showFavoritesOnly: $showFavoritesOnly
+                )
+                .padding(.horizontal)
+                .padding(.vertical, 8)
+
+                if filtered.isEmpty {
+                    if #available(iOS 17.0, *) {
+                        ContentUnavailableView("No matches", systemImage: "magnifyingglass", description: Text("Adjust filters or search."))
+                            .padding(.top, 32)
+                    } else {
+                        VStack(spacing: 8) {
+                            Image(systemName: "magnifyingglass").font(.largeTitle)
+                            Text("No matches").font(.headline)
+                            Text("Adjust filters or search.").foregroundColor(.secondary).font(.subheadline)
+                        }
+                        .padding(.top, 32)
+                    }
+                } else {
+                    List(filtered) { inf in
+                        NavigationLink {
+                            InfluencerDetailView(influencer: inf)
+                        } label: {
+                            InfluencerRow(influencer: inf)
+                        }
+                    }
+                    .listStyle(.plain)
+                }
+            }
+            .navigationTitle("Find Influencers")
+        }
+    }
+}
+
+struct FilterBar: View {
+    @Binding var searchText: String
+    @Binding var selectedNiche: Niche?
+    @Binding var minFollowers: Double
+    @Binding var maxBudget: Double
+    @Binding var showFavoritesOnly: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                TextField("Search name, bio, location…", text: $searchText)
+                    .textFieldStyle(.roundedBorder)
+                Toggle(isOn: $showFavoritesOnly) {
+                    Image(systemName: showFavoritesOnly ? "heart.fill" : "heart")
+                }
+                .toggleStyle(.button)
+                .tint(.pink)
+            }
+
+            HStack(spacing: 8) {
+                Menu {
+                    Button("All Niches") { selectedNiche = nil }
+                    Divider()
+                    ForEach(Niche.allCases) { niche in
+                        Button(niche.rawValue) { selectedNiche = niche }
+                    }
+                } label: {
+                    Label(selectedNiche?.rawValue ?? "All Niches", systemImage: "line.3.horizontal.decrease.circle")
+                        .padding(8)
+                        .background(.thinMaterial)
+                        .cornerRadius(8)
+                }
+
+                VStack(alignment: .leading) {
+                    Text("Min Followers: \(Int(minFollowers)).")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                    Slider(value: $minFollowers, in: 0...1_500_000, step: 10_000)
+                }
+
+                VStack(alignment: .leading) {
+                    Text("Max Budget: $\(Int(maxBudget)).")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                    Slider(value: $maxBudget, in: 500...20_000, step: 100)
+                }
+            }
+        }
+    }
+}
+
+struct InfluencerRow: View {
+    @EnvironmentObject var store: AppStore
+    let influencer: Influencer
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 12) {
+            ZStack {
+                Circle().fill(Color.blue.opacity(0.1))
+                Image(systemName: influencer.avatarSystemImage)
+                    .font(.system(size: 26))
+                    .foregroundColor(.blue)
+            }
+            .frame(width: 44, height: 44)
+
+            VStack(alignment: .leading, spacing: 4) {
+                HStack {
+                    Text(influencer.name).font(.headline)
+                    Spacer()
+                    Button {
+                        store.toggleFavorite(influencer)
+                    } label: {
+                        Image(systemName: store.isFavorite(influencer) ? "heart.fill" : "heart")
+                            .foregroundColor(.pink)
+                    }
+                    .buttonStyle(.plain)
+                }
+                Text(influencer.niches.map { $0.rawValue }.joined(separator: " · "))
+                    .font(.subheadline)
+                    .foregroundColor(.secondary)
+
+                HStack(spacing: 12) {
+                    Label("\(formatFollowers(influencer.followers))", systemImage: "person.3")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                    Label("$\(Int(influencer.baseRateUSD))+", systemImage: "dollarsign.circle")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                    Label(String(format: "%.1f", influencer.rating), systemImage: "star.fill")
+                        .foregroundColor(.yellow)
+                        .font(.caption)
+                }
+                Text(influencer.location)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+        }
+        .padding(.vertical, 6)
+    }
+
+    private func formatFollowers(_ n: Int) -> String {
+        if n >= 1_000_000 { return String(format: "%.1fM", Double(n)/1_000_000) }
+        if n >= 1_000 { return String(format: "%.1fk", Double(n)/1_000) }
+        return "\(n)"
+    }
+}
+
+// MARK: - Details & Offer Compose
+
+struct InfluencerDetailView: View {
+    @EnvironmentObject var store: AppStore
+    let influencer: Influencer
+    @State private var showCompose = false
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                HStack(spacing: 16) {
+                    ZStack {
+                        Circle().fill(Color.blue.opacity(0.1))
+                        Image(systemName: influencer.avatarSystemImage)
+                            .font(.system(size: 48))
+                            .foregroundColor(.blue)
+                    }
+                    .frame(width: 80, height: 80)
+
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(influencer.name).font(.title2).bold()
+                        Text(influencer.location).foregroundColor(.secondary)
+                        HStack(spacing: 10) {
+                            ForEach(influencer.platforms, id: \.self) { p in
+                                Text(p.rawValue).font(.caption2)
+                                    .padding(.horizontal, 6).padding(.vertical, 4)
+                                    .background(Color.secondary.opacity(0.15))
+                                    .cornerRadius(6)
+                            }
+                        }
+                    }
+                }
+
+                Text(influencer.bio)
+
+                HStack(spacing: 16) {
+                    StatTile(title: "Followers", value: formatted(influencer.followers), icon: "person.3")
+                    StatTile(title: "Base Rate", value: "$\(Int(influencer.baseRateUSD))+", icon: "dollarsign.circle")
+                    StatTile(title: "Rating", value: String(format: "%.1f", influencer.rating), icon: "star.fill")
+                }
+
+                Text("Niches")
+                    .font(.headline)
+                WrapHStack(items: influencer.niches.map { $0.rawValue }) { text in
+                    Text(text)
+                        .font(.caption)
+                        .padding(.horizontal, 8).padding(.vertical, 6)
+                        .background(Color.blue.opacity(0.1))
+                        .cornerRadius(8)
+                }
+
+                Button {
+                    showCompose = true
+                } label: {
+                    Label("Contact & Send Offer", systemImage: "envelope")
+                        .frame(maxWidth: .infinity)
+                        .padding()
+                        .background(Color.blue)
+                        .foregroundColor(.white)
+                        .cornerRadius(10)
+                }
+            }
+            .padding()
+        }
+        .navigationTitle("Profile")
+        .navigationBarTitleDisplayMode(.inline)
+        .sheet(isPresented: $showCompose) {
+            OfferComposeSheet(influencer: influencer)
+                .presentationDetents([.medium, .large])
+        }
+    }
+
+    private func formatted(_ n: Int) -> String {
+        if n >= 1_000_000 { return String(format: "%.1fM", Double(n)/1_000_000) }
+        if n >= 1_000 { return String(format: "%.1fk", Double(n)/1_000) }
+        return "\(n)"
+    }
+}
+
+struct StatTile: View {
+    let title: String
+    let value: String
+    let icon: String
+    var body: some View {
+        VStack {
+            Image(systemName: icon).foregroundColor(.blue)
+            Text(value).font(.headline)
+            Text(title).font(.caption).foregroundColor(.secondary)
+        }
+        .frame(maxWidth: .infinity)
+        .padding()
+        .background(.thinMaterial)
+        .cornerRadius(12)
+    }
+}
+
+struct WrapHStack<Content: View>: View {
+    let items: [String]
+    let content: (String) -> Content
+    @State private var totalHeight: CGFloat = .zero
+
+    var body: some View {
+        VStack {
+            GeometryReader { geo in
+                self.generateContent(in: geo)
+            }
+        }
+        .frame(height: totalHeight)
+    }
+
+    private func generateContent(in g: GeometryProxy) -> some View {
+        var width = CGFloat.zero
+        var height = CGFloat.zero
+
+        return ZStack(alignment: .topLeading) {
+            ForEach(items, id: \.self) { item in
+                content(item)
+                    .padding(4)
+                    .alignmentGuide(.leading) { d in
+                        if width + d.width > g.size.width {
+                            width = 0
+                            height -= d.height
+                        }
+                        let result = width
+                        if item == items.last {
+                            width = 0
+                        } else {
+                            width += d.width
+                        }
+                        return result
+                    }
+                    .alignmentGuide(.top) { _ in
+                        let result = height
+                        if item == items.last {
+                            height = 0
+                        }
+                        return result
+                    }
+            }
+        }
+        .background(viewHeightReader($totalHeight))
+    }
+
+    private func viewHeightReader(_ binding: Binding<CGFloat>) -> some View {
+        GeometryReader { geo -> Color in
+            DispatchQueue.main.async {
+                binding.wrappedValue = geo.size.height
+            }
+            return .clear
+        }
+    }
+}
+
+struct OfferComposeSheet: View {
+    @EnvironmentObject var store: AppStore
+    @Environment(\.dismiss) private var dismiss
+    let influencer: Influencer
+
+    @State private var businessName: String = "Your Brand"
+    @State private var title: String = "Sponsored Post Collaboration"
+    @State private var message: String = "We'd love to collaborate on a sponsored post. Can you create a short-form video and an Instagram story highlighting our product launch?"
+    @State private var budget: Double = 1500
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("Business") {
+                    TextField("Business Name", text: $businessName)
+                }
+                Section("Offer") {
+                    TextField("Title", text: $title)
+                    TextEditor(text: $message)
+                        .frame(minHeight: 120)
+                }
+                Section("Budget") {
+                    HStack {
+                        Slider(value: $budget, in: 500...20_000, step: 50)
+                        Text("$\(Int(budget))")
+                            .frame(width: 90, alignment: .trailing)
+                    }
+                }
+                Section {
+                    Button {
+                        let offer = Offer(
+                            id: UUID(),
+                            influencerId: influencer.id,
+                            influencerName: influencer.name,
+                            businessName: businessName.isEmpty ? "Your Brand" : businessName,
+                            title: title,
+                            message: message,
+                            budgetUSD: budget,
+                            status: .sent,
+                            createdAt: Date()
+                        )
+                        store.sendOffer(offer)
+                        dismiss()
+                    } label: {
+                        Label("Send Offer", systemImage: "paperplane.fill")
+                            .foregroundColor(.white)
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.borderedProminent)
+                }
+            }
+            .navigationTitle("New Offer")
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button("Cancel") { dismiss() }
+                }
+            }
+        }
+    }
+}
+
+// MARK: - Offers
+
+struct OffersView: View {
+    @EnvironmentObject var store: AppStore
+    @Binding var businessName: String
+    @State private var statusFilter: OfferStatus? = nil
+
+    var filtered: [Offer] {
+        store.offers.filter { off in
+            if let s = statusFilter, off.status != s { return false }
+            return true
+        }
+    }
+
+    var body: some View {
+        NavigationStack {
+            VStack {
+                HStack {
+                    Menu {
+                        Button("All Statuses") { statusFilter = nil }
+                        Divider()
+                        ForEach(OfferStatus.allCases) { s in
+                            Button(s.rawValue) { statusFilter = s }
+                        }
+                    } label: {
+                        Label(statusFilter?.rawValue ?? "All Statuses", systemImage: "line.3.horizontal.decrease.circle")
+                            .padding(8)
+                            .background(.thinMaterial)
+                            .cornerRadius(8)
+                    }
+                    Spacer()
+                }
+                .padding([.horizontal, .top])
+
+                if filtered.isEmpty {
+                    if #available(iOS 17.0, *) {
+                        ContentUnavailableView("No offers", systemImage: "tray", description: Text("Send your first offer from an influencer profile."))
+                            .padding(.top, 32)
+                    } else {
+                        VStack(spacing: 8) {
+                            Image(systemName: "tray").font(.largeTitle)
+                            Text("No offers").font(.headline)
+                            Text("Send your first offer from an influencer profile.")
+                                .foregroundColor(.secondary).font(.subheadline)
+                        }
+                        .padding(.top, 32)
+                    }
+                } else {
+                    List {
+                        ForEach(filtered) { offer in
+                            OfferRow(offer: offer)
+                        }
+                    }
+                    .listStyle(.plain)
+                }
+            }
+            .navigationTitle("Offers")
+        }
+    }
+}
+
+struct OfferRow: View {
+    @EnvironmentObject var store: AppStore
+    @State private var showEditor = false
+    let offer: Offer
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text(offer.title).font(.headline)
+                Spacer()
+                StatusPill(status: offer.status)
+            }
+            Text("To: \(offer.influencerName)")
+                .font(.subheadline)
+                .foregroundColor(.secondary)
+            HStack(spacing: 12) {
+                Label("$\(Int(offer.budgetUSD))", systemImage: "dollarsign.circle")
+                Text(offer.createdAt.formatted(date: .abbreviated, time: .shortened))
+                    .foregroundColor(.secondary)
+            }
+            .font(.caption)
+
+            HStack {
+                Button("View / Edit") { showEditor = true }
+                Spacer()
+                Menu("Update Status") {
+                    ForEach(OfferStatus.allCases) { s in
+                        Button(s.rawValue) {
+                            var updated = offer
+                            updated.status = s
+                            store.updateOffer(updated)
+                        }
+                    }
+                }
+            }
+            .font(.caption)
+        }
+        .padding(.vertical, 6)
+        .sheet(isPresented: $showEditor) {
+            OfferEditSheet(offer: offer)
+        }
+    }
+}
+
+struct StatusPill: View {
+    let status: OfferStatus
+    var color: Color {
+        switch status {
+        case .draft: return .gray
+        case .sent: return .blue
+        case .accepted: return .green
+        case .rejected: return .red
+        }
+    }
+    var body: some View {
+        Text(status.rawValue)
+            .font(.caption2)
+            .padding(.horizontal, 8).padding(.vertical, 4)
+            .background(color.opacity(0.15))
+            .foregroundColor(color)
+            .cornerRadius(999)
+    }
+}
+
+struct OfferEditSheet: View {
+    @EnvironmentObject var store: AppStore
+    @Environment(\.dismiss) private var dismiss
+    @State var offer: Offer
+
+    init(offer: Offer) {
+        _offer = State(initialValue: offer)
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("Title") {
+                    TextField("Title", text: $offer.title)
+                }
+                Section("Message") {
+                    TextEditor(text: $offer.message)
+                        .frame(minHeight: 140)
+                }
+                Section("Budget") {
+                    HStack {
+                        Slider(value: $offer.budgetUSD, in: 500...20_000, step: 50)
+                        Text("$\(Int(offer.budgetUSD))").frame(width: 90, alignment: .trailing)
+                    }
+                }
+                Section("Status") {
+                    Picker("Status", selection: $offer.status) {
+                        ForEach(OfferStatus.allCases) { s in
+                            Text(s.rawValue).tag(s)
+                        }
+                    }.pickerStyle(.segmented)
+                }
+            }
+            .navigationTitle("Edit Offer")
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button("Close") { dismiss() }
+                }
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Save") {
+                        store.updateOffer(offer)
+                        dismiss()
+                    }
+                }
+            }
+        }
+    }
+}
+
+// MARK: - Profile (Business)
+
+struct ProfileView: View {
+    @Binding var businessName: String
+    @State private var industry: String = "Food"
+    @State private var website: String = ""
+    @State private var contactEmail: String = ""
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("Business Info") {
+                    TextField("Business Name", text: $businessName)
+                    TextField("Industry", text: $industry)
+                    TextField("Website (optional)", text: $website)
+                        .keyboardType(.URL)
+                        .textInputAutocapitalization(.never)
+                    TextField("Contact Email (optional)", text: $contactEmail)
+                        .keyboardType(.emailAddress)
+                        .textInputAutocapitalization(.never)
+                }
+
+                Section("How it works") {
+                    LabeledContent("1. Discover") { Text("Filter by niche, followers, budget.") }
+                    LabeledContent("2. Contact") { Text("Open a profile and send an offer.") }
+                    LabeledContent("3. Collaborate") { Text("Negotiate terms and close.") }
+                }
+            }
+            .navigationTitle("Business Profile")
+        }
+    }
+}
